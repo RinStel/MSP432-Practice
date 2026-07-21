@@ -514,8 +514,8 @@ void Keyboard_Control()
 
                 case 2:
                     myScreen.clear(blackColour);
-                    Setting();
                     SettingChoose = 1;
+                    Setting();
                     break;
 
                 case 3:
