@@ -7,42 +7,101 @@
 #include <Screen_HX8353E.h>
 Screen_HX8353E myScreen;
 
-const int BUTTON_ONE = 33, BUTTON_TWO = 32;
-const int Joystick_X = 2, Joystick_Y = 26;
+#define BUTTON_ONE 33
+#define BUTTON_TWO 32
+#define Joystick_X 2
+#define Joystick_Y 26
 
-const int FIELD_X = 42, FIELD_Y = 42;
-const int CELL_SIZE = 2;
+#define FIELD_X 100
+#define FIELD_Y 100
+#define MAX_CELL_SIZE 4  // 最大细胞尺寸, 不要改
+int CELL_SIZE = 3;
 
+// 可见区域大小，单位为细胞数
+#define MAX_VIEW_W 42
+#define MAX_VIEW_H 42
+int VIEW_W = 128 / (CELL_SIZE + 1), VIEW_H = 128 / (CELL_SIZE + 1);
+// 相机偏移（区域左上角对应的细胞坐标）
+int camX = 0, camY = 0;
+int lastCamX = -1, lastCamY = -1;  // 用于检测相机移动
+int camTick = 0;                    // 相机移动速率限制
+
+int tick = 0;
+
+// 压缩的细胞状态，应对变量存储空间不足的问题
 typedef struct{
-  bool stateLast = false; // 上一次的状态
-  bool state = false;
-
-  // 显示缓存，用于淡入淡出
-  // 0: 灭；1: 亮
-  uint8_t buf[CELL_SIZE][CELL_SIZE] = { 0 };
+  uint32_t buf       : 25;  // 淡入淡出缓存 (位0-24)
+  uint32_t stateLast : 1;   // 上一帧状态 (位25)
+  uint32_t state     : 1;   // 当前状态 (位26)
 }Cell_t;
 Cell_t cell[FIELD_X][FIELD_Y];
 
-// 让细胞直接亮起
-void makeItLive(int x, int y){
-  cell[x][y].state = true;
-  for(int i = 0; i < CELL_SIZE; ++i){
-    for(int j = 0; j < CELL_SIZE; ++j){
-      cell[x][y].buf[i][j] = 1;
-      myScreen.point(x * (CELL_SIZE + 1) + j, y * (CELL_SIZE + 1) + i, whiteColour);
+// 显示缓冲区, 同样使用压缩来应对内存问题
+#define DISP_BUF_BITS (MAX_VIEW_W * MAX_VIEW_H)
+#define DISP_BUF_WORDS ((DISP_BUF_BITS + 31) / 32)
+uint32_t dispBuf[DISP_BUF_WORDS] = { 0 };
+
+static inline bool dispBufGet(int vx, int vy){
+  int bit = vy * MAX_VIEW_W + vx;
+  return (dispBuf[bit >> 5] >> (bit & 31)) & 1;
+}
+static inline void dispBufSet(int vx, int vy, bool val){
+  int bit = vy * MAX_VIEW_W + vx;
+  if(val)
+    dispBuf[bit >> 5] |= 1UL << (bit & 31);
+  else
+    dispBuf[bit >> 5] &= ~(1UL << (bit & 31));
+}
+
+
+// 判断细胞是否在当前视口内
+bool isCellVisible(int x, int y){
+  return (x >= camX && x < camX + VIEW_W && y >= camY && y < camY + VIEW_H);
+}
+
+// 将世界坐标转为屏幕坐标
+int worldToScreenX(int worldX){ return (worldX - camX) * (CELL_SIZE + 1); }
+int worldToScreenY(int worldY){ return (worldY - camY) * (CELL_SIZE + 1); }
+
+// 在屏幕上绘制单个细胞（使用视口相对坐标）
+void drawCell(int x, int y, uint16_t colour){
+  int sx = worldToScreenX(x);
+  int sy = worldToScreenY(y);
+  myScreen.dRectangle(sx, sy, CELL_SIZE, CELL_SIZE, colour);
+}
+
+
+// 显示更新
+void updateDisplay(){
+  for(int vx = 0; vx < VIEW_W; ++vx){
+    for(int vy = 0; vy < VIEW_H; ++vy){
+      int wx = camX + vx;
+      int wy = camY + vy;
+      if(wx >= FIELD_X || wy >= FIELD_Y) continue;
+
+      bool shouldBe = cell[wx][wy].state;
+      if(shouldBe != dispBufGet(vx, vy)){
+        dispBufSet(vx, vy, shouldBe);
+        drawCell(wx, wy, shouldBe ? whiteColour : blackColour);
+      }
     }
   }
 }
 
-// 让细胞直接灭掉
-void makeItDie(int x, int y){
-  cell[x][y].state = false;
+// 让细胞直接亮起（仅设置状态，不直接绘制像素）
+void makeItLive(int x, int y){
+  cell[x][y].state = true;
   for(int i = 0; i < CELL_SIZE; ++i){
     for(int j = 0; j < CELL_SIZE; ++j){
-      cell[x][y].buf[i][j] = 0;
-      myScreen.point(x * (CELL_SIZE + 1) + j, y * (CELL_SIZE + 1) + i, blackColour);
+      cell[x][y].buf |= 1UL << (MAX_CELL_SIZE * i + j);
     }
   }
+}
+
+// 让细胞直接灭掉（仅设置状态，不直接绘制像素）
+void makeItDie(int x, int y){
+  cell[x][y].state = false;
+  cell[x][y].buf = 0;
 }
 
 void clearCells(){
@@ -50,16 +109,66 @@ void clearCells(){
     for(int y = 0; y < FIELD_Y; ++y){
       cell[x][y].stateLast = false;
       cell[x][y].state = false;
-
-      for(int i = 0; i < CELL_SIZE; ++i){
-        for(int j = 0; j < CELL_SIZE; ++j){
-          cell[x][y].buf[i][j] = 0;
-        }
-      }
+      cell[x][y].buf = 0;
     }
   }
 
+  // 重置相机到原点
+  camX = 0; camY = 0;
+  lastCamX = -1; lastCamY = -1;
+
   myScreen.clear(blackColour);
+}
+
+// 绘制可见区域内所有存活细胞（全局重绘）
+void drawView(){
+  myScreen.clear(blackColour);
+  for(int i = camX; i < camX + VIEW_W && i < FIELD_X; ++i){
+    for(int j = camY; j < camY + VIEW_H && j < FIELD_Y; ++j){
+      if(cell[i][j].state){
+        drawCell(i, j, whiteColour);
+      }
+    }
+  }
+  lastCamX = camX;
+  lastCamY = camY;
+}
+
+// 通过摇杆移动相机
+void updateCamera(){
+  camTick++;
+  if(camTick < 4) return;  // 速率限制
+  camTick = 0;
+
+  int joyX = analogRead(Joystick_X);
+  int joyY = 4096 - analogRead(Joystick_Y);
+
+  const int CENTER = 2048;
+  const int DEAD_ZONE = 400;
+  const int SPEED_DIV = 400;
+
+  int dx = 0, dy = 0;
+
+  if(joyX < CENTER - DEAD_ZONE){
+    dx = -((CENTER - DEAD_ZONE - joyX) / SPEED_DIV + 1);
+  }else if(joyX > CENTER + DEAD_ZONE){
+    dx = (joyX - CENTER - DEAD_ZONE) / SPEED_DIV + 1;
+  }
+
+  if(joyY < CENTER - DEAD_ZONE){
+    dy = -((CENTER - DEAD_ZONE - joyY) / SPEED_DIV + 1);
+  }else if(joyY > CENTER + DEAD_ZONE){
+    dy = (joyY - CENTER - DEAD_ZONE) / SPEED_DIV + 1;
+  }
+
+  camX += dx;
+  camY += dy;
+
+  // 边界限制
+  if(camX < 0) camX = 0;
+  if(camX > FIELD_X - VIEW_W) camX = FIELD_X - VIEW_W;
+  if(camY < 0) camY = 0;
+  if(camY > FIELD_Y - VIEW_H) camY = FIELD_Y - VIEW_H;
 }
 
 void initCellsRandom(){
@@ -122,32 +231,32 @@ void initCellsGosper(){
 }
 
 
-// 此处的运行指“淡入淡出”
+// 此处的运行指”淡入淡出”
 void runCells(){
   for(int i = 0; i < FIELD_X; ++i){
     for(int j = 0; j < FIELD_Y; ++j){
       if(cell[i][j].state){
         // 如果细胞存活
         int index = random(0, CELL_SIZE * CELL_SIZE), startIndex = index;
-        while(cell[i][j].buf[index / CELL_SIZE][index % CELL_SIZE] == 1){
+        while(cell[i][j].buf & (1UL << ((index / CELL_SIZE) * MAX_CELL_SIZE + index % CELL_SIZE))){
           index = (index + 1) % (CELL_SIZE * CELL_SIZE);
           if(index == startIndex){
             break;
           }
         }
-        cell[i][j].buf[index / CELL_SIZE][index % CELL_SIZE] = 1;
+        cell[i][j].buf |= 1UL << ((index / CELL_SIZE) * MAX_CELL_SIZE + index % CELL_SIZE);
 
         myScreen.point(i * (CELL_SIZE + 1) + index % CELL_SIZE, j * (CELL_SIZE + 1) + index / CELL_SIZE, whiteColour);
       }else{
         // 如果细胞死亡
         int index = random(0, CELL_SIZE * CELL_SIZE), startIndex = index;
-        while(cell[i][j].buf[index / CELL_SIZE][index % CELL_SIZE] == 0){
+        while(!(cell[i][j].buf & (1UL << ((index / CELL_SIZE) * MAX_CELL_SIZE + index % CELL_SIZE)))){
           index = (index + 1) % (CELL_SIZE * CELL_SIZE);
           if(index == startIndex){
             break;
           }
         }
-        cell[i][j].buf[index / CELL_SIZE][index % CELL_SIZE] = 0;
+        cell[i][j].buf &= ~(1UL << ((index / CELL_SIZE) * MAX_CELL_SIZE + index % CELL_SIZE));
 
         myScreen.point(i * (CELL_SIZE + 1) + index % CELL_SIZE, j * (CELL_SIZE + 1) + index / CELL_SIZE, blackColour);
       }
@@ -155,19 +264,19 @@ void runCells(){
   }
 }
 
-// 非淡入淡出, 直接绘制矩形
-void runCellsBlock(){
-  for(int i = 0; i < FIELD_X; ++i){
-    for(int j = 0; j < FIELD_Y; ++j){
-      if(cell[i][j].state && !cell[i][j].stateLast){
-        myScreen.dRectangle(i * (CELL_SIZE + 1), j * (CELL_SIZE + 1), CELL_SIZE, CELL_SIZE, whiteColour);
-      }
-      if(!cell[i][j].state && cell[i][j].stateLast){
-        myScreen.dRectangle(i * (CELL_SIZE + 1), j * (CELL_SIZE + 1), CELL_SIZE, CELL_SIZE, blackColour);
-      }
-    }
-  }
-}
+// // 非淡入淡出, 直接绘制矩形（仅绘制可见区域内变化的细胞）, 弃用
+// void runCellsBlock(){
+//   for(int i = camX; i < camX + VIEW_W && i < FIELD_X; ++i){
+//     for(int j = camY; j < camY + VIEW_H && j < FIELD_Y; ++j){
+//       if(cell[i][j].state && !cell[i][j].stateLast){
+//         drawCell(i, j, whiteColour);
+//       }
+//       if(!cell[i][j].state && cell[i][j].stateLast){
+//         drawCell(i, j, blackColour);
+//       }
+//     }
+//   }
+// }
 
 void stepCells(){
   for(int i = 0; i < FIELD_X; ++i){
@@ -222,6 +331,7 @@ void stepCells(){
 
 int Choose = 1;
 int Change = 0;
+int displayMode = 0;  // 0=非淡入淡出, 1=淡入淡出
 
 void showText(String text)
 {
@@ -261,15 +371,14 @@ void MainScreen()
 
 void Start()
 {
-    myScreen.clear(blackColour);
-
-    // 游戏初始化代码
-    
+    initCellsRandom();
+    for(int i = 0; i < DISP_BUF_WORDS; ++i) dispBuf[i] = 0;
+    tick = 0;
 }
 
 void ExitMenu()
 {
-    myScreen.gText(45, 50, "EXIT",
+    myScreen.gText(45, 30, "EXIT",
                    Choose == 1 ? redColour : whiteColour,
                    blackColour, 1, 1);
 
@@ -280,7 +389,7 @@ void ExitMenu()
 
 void Keyboard_Control()
 {
-    if (button1State == LOW)
+    if (digitalRead(BUTTON_ONE) == LOW)
     {
         if (Change == 0)
         {
@@ -324,11 +433,11 @@ void Keyboard_Control()
             }
         }
 
-        while (digitalRead(BUTTON1) == LOW);
-        delay(50);
+        while (digitalRead(BUTTON_ONE) == LOW);
+        delay(30);
     }
 
-    if (button2State == LOW && Change == 1)
+    if (digitalRead(BUTTON_TWO) == LOW && Change == 1)
     {
         if (Choose == 1)
         {
@@ -342,47 +451,47 @@ void Keyboard_Control()
             MainScreen();
         }
 
-        while (digitalRead(BUTTON2) == LOW);
-        delay(50);
+        while (digitalRead(BUTTON_TWO) == LOW);
+        delay(30);
     }
 }
 
 void Joystick_Control()
 {
-    if (Change == 0 && analogRead(Y) > 3500 && Choose > 1)
+    if (Change == 0 && analogRead(Y) > 3300 && Choose > 1)
     {
         Choose --;
         Menu();
 
         while (analogRead(Y) > 3000);
-        delay(50);
+        delay(30);
     }
 
-    if (Change == 0 && analogRead(Y) < 500 && Choose < 3)
+    if (Change == 0 && analogRead(Y) < 300 && Choose < 3)
     {
         Choose ++;
         Menu();
 
         while (analogRead(Y) < 1000);
-        delay(50);
+        delay(30);
     }
 
-    if (Change == 2 && analogRead(Y) > 3500 && Choose > 1)
+    if (Change == 2 && analogRead(Y) > 3300 && Choose > 1)
     {
         Choose --;
         ExitMenu();
 
         while (analogRead(Y) > 3000);
-        delay(50);
+        delay(30);
     }
 
-    if (Change == 2 && analogRead(Y) < 500 && Choose < 2)
+    if (Change == 2 && analogRead(Y) < 300 && Choose < 2)
     {
         Choose ++;
         ExitMenu();
 
         while (analogRead(Y) < 1000);
-        delay(50);
+        delay(30);
     }
 }
 
@@ -390,45 +499,54 @@ void Joystick_Control()
 void setup() {
   // put your setup code here, to run once:
   myScreen.begin();
+  myScreen.setPenSolid(true);
 
   pinMode(BUTTON_ONE, INPUT_PULLUP);
   pinMode(BUTTON_TWO, INPUT_PULLUP);
   pinMode(Joystick_X, INPUT);
   pinMode(Joystick_Y, INPUT);
-  
+
 
   Serial.begin(9600);
   analogReadResolution(12);
 
-  pinMode(BUTTON_ONE, INPUT_PULLUP);
-  pinMode(BUTTON_TWO, INPUT_PULLUP);
-
   MainScreen();
 }
-
-int tick = 0;
 
 void loop() {
   tick++;
 
   Keyboard_Control();
-    
-  Joystick_Control();
 
-  // // 淡入淡出
-  // if(tick <= CELL_SIZE * CELL_SIZE){
-  //   runCells();
-  // }else if(tick >= CELL_SIZE * CELL_SIZE + 2000/10){
-  //   tick = 0;
-  //   stepCells();
-  // }
+  // 游戏模式下摇杆控制相机，菜单模式下摇杆控制菜单选择
+  if(Change == 1){
+    updateCamera();
 
-  // 非淡入淡出
-  if(tick == 1){
-    runCellsBlock();
-  }else if(tick >= 1 + 50/10){
-    tick = 0;
-    stepCells();
+    bool camMoved = (camX != lastCamX || camY != lastCamY);
+
+    if(displayMode == 0){
+      // 非淡入淡出：仅相机移动或细胞演化后才刷新
+      if(camMoved){
+        updateDisplay();
+        lastCamX = camX;
+        lastCamY = camY;
+      }
+      if(tick >= 1 + 30/10){
+        tick = 0;
+        stepCells();
+        updateDisplay();  // 演化后立即刷新变化的细胞
+      }
+    }else{
+      // 淡入淡出
+      if(tick <= CELL_SIZE * CELL_SIZE){
+        runCells();
+      }else if(tick >= CELL_SIZE * CELL_SIZE + 2000/10){
+        tick = 0;
+        stepCells();
+      }
+    }
+  }else{
+    Joystick_Control();
   }
 
 
