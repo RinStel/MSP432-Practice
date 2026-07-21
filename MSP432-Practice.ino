@@ -14,7 +14,7 @@ Screen_HX8353E myScreen;
 
 #define FIELD_X 100
 #define FIELD_Y 100
-#define MAX_CELL_SIZE 4  // 最大细胞尺寸, 不要改
+#define MAX_CELL_SIZE 5
 int CELL_SIZE = 3;
 
 // 可见区域大小，单位为细胞数
@@ -332,6 +332,7 @@ void stepCells(){
 int Choose = 1;
 int Change = 0;
 int displayMode = 0;  // 0=非淡入淡出, 1=淡入淡出
+int SettingChoose = 1;
 
 void showText(String text)
 {
@@ -372,8 +373,18 @@ void MainScreen()
 void Start()
 {
     initCellsRandom();
+    if (displayMode == 1)
+    {
+        for (int x = 0; x < FIELD_X; x++)
+        {
+            for (int y = 0; y < FIELD_Y; y++)
+            {
+                cell[x][y].buf = 0;
+            }
+        }
+    }
     for(int i = 0; i < DISP_BUF_WORDS; ++i) dispBuf[i] = 0;
-    tick = 0;
+    tick = -1;
 }
 
 void ExitMenu()
@@ -385,6 +396,15 @@ void ExitMenu()
     myScreen.gText(35, 65, "RESTART",
                    Choose == 2 ? redColour : whiteColour,
                    blackColour, 1, 1);
+}
+
+void Setting()
+{
+    myScreen.gText(35, 20, "SETTING", whiteColour, blackColour, 1, 1);
+    myScreen.gText(5, 40, "CELL_SIZE", SettingChoose == 1 ? redColour : whiteColour, blackColour, 1, 1);
+    myScreen.gText(90, 40, String(CELL_SIZE), whiteColour, blackColour, 1, 1);
+    myScreen.gText(5, 55, "DISPLAY_MODE", SettingChoose == 2 ? redColour : whiteColour, blackColour, 1, 1);
+    myScreen.gText(90, 55, String(displayMode), whiteColour, blackColour, 1, 1);
 }
 
 void Keyboard_Control()
@@ -403,7 +423,8 @@ void Keyboard_Control()
 
                 case 2:
                     myScreen.clear(blackColour);
-                    myScreen.gText(35, 55, "SETTING", whiteColour);
+                    Setting();
+                    SettingChoose = 1;
                     break;
 
                 case 3:
@@ -458,39 +479,93 @@ void Keyboard_Control()
 
 void Joystick_Control()
 {
-    if (Change == 0 && analogRead(Y) > 3300 && Choose > 1)
+    if (Change == 1 && Choose == 2 && analogRead(Joystick_X) > 3300 &&
+        ((SettingChoose == 1 && CELL_SIZE < 5) || (SettingChoose == 2 && displayMode < 1)))
+    {
+        if (SettingChoose == 1)
+        {
+            CELL_SIZE ++;
+            VIEW_W = 128 / (CELL_SIZE + 1);
+            VIEW_H = 128 / (CELL_SIZE + 1);
+            camX = 0;
+            camY = 0;
+            lastCamX = -1;
+            lastCamY = -1;
+        }
+        else displayMode = 1;
+        Setting();
+        while (analogRead(Joystick_X) > 3000);
+        delay(30);
+    }
+
+    if (Change == 1 && Choose == 2 && analogRead(Joystick_X) < 300 &&
+        ((SettingChoose == 1 && CELL_SIZE > 2) || (SettingChoose == 2 && displayMode > 0)))
+    {
+        if (SettingChoose == 1)
+        {
+            CELL_SIZE --;
+            VIEW_W = 128 / (CELL_SIZE + 1);
+            VIEW_H = 128 / (CELL_SIZE + 1);
+            camX = 0;
+            camY = 0;
+            lastCamX = -1;
+            lastCamY = -1;
+        }
+        else displayMode = 0;
+        Setting();
+        while (analogRead(Joystick_X) < 1000);
+        delay(30);
+    }
+
+    if (Change == 1 && Choose == 2 && analogRead(Joystick_Y) > 3300 && SettingChoose > 1)
+    {
+        SettingChoose --;
+        Setting();
+        while (analogRead(Joystick_Y) > 3000);
+        delay(30);
+    }
+
+    if (Change == 1 && Choose == 2 && analogRead(Joystick_Y) < 300 && SettingChoose < 2)
+    {
+        SettingChoose ++;
+        Setting();
+        while (analogRead(Joystick_Y) < 1000);
+        delay(30);
+    }
+
+    if (Change == 0 && analogRead(Joystick_Y) > 3300 && Choose > 1)
     {
         Choose --;
         Menu();
 
-        while (analogRead(Y) > 3000);
+        while (analogRead(Joystick_Y) > 3000);
         delay(30);
     }
 
-    if (Change == 0 && analogRead(Y) < 300 && Choose < 3)
+    if (Change == 0 && analogRead(Joystick_Y) < 300 && Choose < 3)
     {
         Choose ++;
         Menu();
 
-        while (analogRead(Y) < 1000);
+        while (analogRead(Joystick_Y) < 1000);
         delay(30);
     }
 
-    if (Change == 2 && analogRead(Y) > 3300 && Choose > 1)
+    if (Change == 2 && analogRead(Joystick_Y) > 3300 && Choose > 1)
     {
         Choose --;
         ExitMenu();
 
-        while (analogRead(Y) > 3000);
+        while (analogRead(Joystick_Y) > 3000);
         delay(30);
     }
 
-    if (Change == 2 && analogRead(Y) < 300 && Choose < 2)
+    if (Change == 2 && analogRead(Joystick_Y) < 300 && Choose < 2)
     {
         Choose ++;
         ExitMenu();
 
-        while (analogRead(Y) < 1000);
+        while (analogRead(Joystick_Y) < 1000);
         delay(30);
     }
 }
@@ -519,7 +594,7 @@ void loop() {
   Keyboard_Control();
 
   // 游戏模式下摇杆控制相机，菜单模式下摇杆控制菜单选择
-  if(Change == 1){
+  if(Change == 1 && Choose == 1){
     updateCamera();
 
     bool camMoved = (camX != lastCamX || camY != lastCamY);
