@@ -23,16 +23,6 @@ typedef struct{
 }Cell_t;
 Cell_t cell[FIELD_X][FIELD_Y];
 
-typedef struct{
-  uint8_t x = 10, y = 10;
-  bool visible = false; // 是否可见
-  int idieTime = 0;    // 空闲时间
-
-  uint8_t x_last = 10, y_last = 10;
-  bool visible_last = true; // 上一次是否可见
-}Cursor;
-Cursor cursor;
-
 // 让细胞直接亮起
 void makeItLive(int x, int y){
   cell[x][y].state = true;
@@ -227,6 +217,176 @@ void stepCells(){
 }
 
 
+#define X 2
+#define Y 26
+
+int Choose = 1;
+int Change = 0;
+
+void showText(String text)
+{
+    myScreen.clear(blackColour);
+    myScreen.setFontSize(0);
+
+    for (uint16_t i = 0; i < text.length(); i += 21)
+    {
+        myScreen.gText(0, i / 21 * 8, text.substring(i, i + 21), whiteColour);
+    }
+}
+
+void Menu()
+{
+    myScreen.gText(45, 65, "START",
+                   Choose == 1 ? redColour : whiteColour,
+                   blackColour, 1, 1);
+
+    myScreen.gText(39, 75, "Setting",
+                   Choose == 2 ? redColour : whiteColour,
+                   blackColour, 1, 1);
+
+    myScreen.gText(27, 85, "Introduction",
+                   Choose == 3 ? redColour : whiteColour,
+                   blackColour, 1, 1);
+}
+
+void MainScreen()
+{
+    myScreen.clear(blackColour);
+
+    myScreen.gText(0, 10, "Cellular", cyanColour, blackColour, 2, 2);
+    myScreen.gText(30, 30, "Automata", cyanColour, blackColour, 2, 2);
+
+    Menu();
+}
+
+void Start()
+{
+    myScreen.clear(blackColour);
+
+    // 游戏初始化代码
+    
+}
+
+void ExitMenu()
+{
+    myScreen.gText(45, 50, "EXIT",
+                   Choose == 1 ? redColour : whiteColour,
+                   blackColour, 1, 1);
+
+    myScreen.gText(35, 65, "RESTART",
+                   Choose == 2 ? redColour : whiteColour,
+                   blackColour, 1, 1);
+}
+
+void Keyboard_Control()
+{
+    if (button1State == LOW)
+    {
+        if (Change == 0)
+        {
+            Change = 1;
+
+            switch (Choose)
+            {
+                case 1:
+                    Start();
+                    break;
+
+                case 2:
+                    myScreen.clear(blackColour);
+                    myScreen.gText(35, 55, "SETTING", whiteColour);
+                    break;
+
+                case 3:
+                    showText(
+                        "Cellular automata use a grid of living and dead cells. "
+                        "Each frame, cells change by neighbor rules: fewer than 2 die, "
+                        "2 or 3 survive, more than 3 die, and dead cells with exactly "
+                        "3 neighbors become alive. Simple local rules can create "
+                        "complex patterns."
+                    );
+                    break;
+            }
+        }
+        else if (Change == 2)
+        {
+            if (Choose == 1)
+            {
+                Change = 0;
+                Choose = 1;
+                MainScreen();
+            }
+            else if (Choose == 2)
+            {
+                Change = 1;
+                Choose = 1;
+                Start();
+            }
+        }
+
+        while (digitalRead(BUTTON1) == LOW);
+        delay(50);
+    }
+
+    if (button2State == LOW && Change == 1)
+    {
+        if (Choose == 1)
+        {
+            Change = 2;
+            myScreen.clear(blackColour);
+            ExitMenu();
+        }
+        else
+        {
+            Change = 0;
+            MainScreen();
+        }
+
+        while (digitalRead(BUTTON2) == LOW);
+        delay(50);
+    }
+}
+
+void Joystick_Control()
+{
+    if (Change == 0 && analogRead(Y) > 3500 && Choose > 1)
+    {
+        Choose --;
+        Menu();
+
+        while (analogRead(Y) > 3000);
+        delay(50);
+    }
+
+    if (Change == 0 && analogRead(Y) < 500 && Choose < 3)
+    {
+        Choose ++;
+        Menu();
+
+        while (analogRead(Y) < 1000);
+        delay(50);
+    }
+
+    if (Change == 2 && analogRead(Y) > 3500 && Choose > 1)
+    {
+        Choose --;
+        ExitMenu();
+
+        while (analogRead(Y) > 3000);
+        delay(50);
+    }
+
+    if (Change == 2 && analogRead(Y) < 500 && Choose < 2)
+    {
+        Choose ++;
+        ExitMenu();
+
+        while (analogRead(Y) < 1000);
+        delay(50);
+    }
+}
+
+
 void setup() {
   // put your setup code here, to run once:
   myScreen.begin();
@@ -236,15 +396,24 @@ void setup() {
   pinMode(Joystick_X, INPUT);
   pinMode(Joystick_Y, INPUT);
   
-  initCellsGosper();
+
+  Serial.begin(9600);
+  analogReadResolution(12);
+
+  pinMode(BUTTON_ONE, INPUT_PULLUP);
+  pinMode(BUTTON_TWO, INPUT_PULLUP);
+
+  MainScreen();
 }
 
 int tick = 0;
-int btnOneState = 0, btnTwoState = 0;
 
 void loop() {
   tick++;
 
+  Keyboard_Control();
+    
+  Joystick_Control();
 
   // // 淡入淡出
   // if(tick <= CELL_SIZE * CELL_SIZE){
@@ -260,50 +429,6 @@ void loop() {
   }else if(tick >= 1 + 50/10){
     tick = 0;
     stepCells();
-  }
-
-
-  // 按键状态机
-  switch(btnOneState){
-  case 0:
-    if(digitalRead(BUTTON_ONE) == LOW){
-      btnOneState = 1;
-    }
-    break;
-  case 1:
-    if(digitalRead(BUTTON_ONE) == LOW){
-      btnOneState = 2;
-      // 按下时的处理
-      if(!cursor.visible){
-        cursor.visible = true;
-        cursor.x = FIELD_X / 2;
-        cursor.y = FIELD_Y / 2;
-      }else{
-        if(cell[cursor.x][cursor.y].state){
-          makeItDie(cursor.x, cursor.y);
-        }else{
-          makeItLive(cursor.x, cursor.y);
-        }
-      }
-    }else{
-      btnOneState = 0;
-    }
-    break;
-  case 2:
-    if(digitalRead(BUTTON_ONE) == HIGH){
-      btnOneState = 0;
-    }
-    break;
-  }
-
-  if(cursor.visible){
-    if(!cursor.visible_last || cursor.x != cursor.x_last || cursor.y != cursor.y_last){
-      // 如果光标位置发生变化，则擦除上一个光标
-      myScreen.dRectangle(cursor.x_last * (CELL_SIZE + 1), cursor.y_last * (CELL_SIZE + 1), CELL_SIZE, CELL_SIZE, blackColour);
-    }
-    // 光标闪烁
-    uint32_t cursorColour = (tick % 50 < 25) ? redColour : blackColour;
-    myScreen.dRectangle((cursor.x - 1) * (CELL_SIZE + 1) + CELL_SIZE, (cursor.y - 1) * (CELL_SIZE + 1) + CELL_SIZE, CELL_SIZE + 2, CELL_SIZE + 2, cursorColour);
   }
 
 
